@@ -53,78 +53,78 @@ dissimilarities = scipy.spatial.distance.squareform(dissimilarities)
 
 # %%
 # Flip/clip/shift als Korrektur ausführen
-
-# Definition der dis2sim und sim2dis Funktionen
-def isSymmetric(d):
-    return not np.abs(d - d.T).any()
+def sum(a, b=0):
+    return np.array([np.sum(a, b)])
 
 
-def dis2sim(dis):
-    (n, m) = dis.shape
-    if n != m:
-        raise Exception('The dissimilarity matrix must be square.')
-    if np.diag(dis).any():
-        raise Exception('The dissimilarity matrix must have zero diagonal.')
-    if not isSymmetric(dis):
-        raise Exception('The dissimilarity matrix must be symmetric.')
+def correctMatrix(D, correction='clip'):
+    # dissimilarities
+    N = D.shape[0]
 
-    J = np.eye(n) - np.tile(1 / n, (n, n))
-    sim = -0.5 * J @ dis @ J
-    sim = 0.5 * (sim + sim.T)
-    return sim
+    PInvDmm = np.linalg.pinv(D)
+    S_mm = -.5 * (
+            D
+            - 1 / N * np.ones((N, 1)) * sum(D, 0)
+            - 1 / N * sum(D, 0).T @ np.ones((1, N))
+            + 1 / pow(N, 2) * np.sum(sum(D @ PInvDmm, 0) @ D.T)
+    )
+    # Eigval correction
+    S_mm = .5 * (S_mm + S_mm.T)
+
+    tmp = sum(D @ PInvDmm, 0)
+    center_estimates = tmp / N
+    overall_mean_dissimilarity = np.sum(tmp @ D.T) / pow(N, 2)
+    mean_dissimilarity = sum(D, 0) / N
+
+    print("S_mm", S_mm)
+    w, v = np.linalg.eigh(S_mm)
+    v = np.flip(v, 1)
+    w = w[::-1]
+    w[w < 0] = 0  # clip
+    w = np.diag(w)
+
+    S_nm_ = v @ (w @ v.T)
+    S_mm_ = S_nm_
+    S_mm_ = 0.5 * (S_mm_ + S_mm_.T)
+
+    P = np.linalg.pinv(S_mm_, 1e-4) @ S_nm_
+
+    def fDis2K(DX_km):
+        _N, _m = DX_km.shape
+        Snm = -.5 * (
+                DX_km
+                - np.ones((_N, 1)) * mean_dissimilarity
+                - (center_estimates @ DX_km.T).T * np.ones((1, _m))
+                + overall_mean_dissimilarity
+        )
+        return Snm @ P
+
+    return S_nm_, fDis2K
 
 
-def sim2dis(sim):
-    (n, m) = sim.shape
-    if n != m:
-        raise Exception('The similarity matrix must be square.')
-    if not isSymmetric(sim):
-        raise Exception('The similarity matrix must be symmetric.')
-    d1 = np.diag(sim)
-    d2 = d1.T
-    dis = (d1 + d2) - 2 * sim
-    dis = 0.5 * (dis + dis.T)
-    return dis
-
-
-# Definition der Korrekturverfahren
-def clip_matrix_with_exact_eigenvalue(eigenvalues, eigenvectors):
-    eigenvalues = np.where(eigenvalues < 0, 0.0, eigenvalues)
-    eigenvalues = np.eye(len(eigenvalues)) * eigenvalues
-    matrix = np.linalg.multi_dot([eigenvectors, eigenvalues, eigenvectors.T])
-    return matrix
-
-
-def clip_matrix_with_exact_eigenvalue1(mat, eigenvalues, eigenvectors):
-    Vclip = eigenvectors * np.power(np.abs(eigenvalues), -0.5) @ np.diag(eigenvalues > 0)
-    return mat @ Vclip @ Vclip.T @ mat, Vclip
-
-
-similarities = dis2sim(dissimilarities)
-sw, sv = np.linalg.eig(similarities)
-
-# Unterscheiden sich nur in der 15. Nachkommastelle
-simClipped_orig = clip_matrix_with_exact_eigenvalue(sw, sv)
-simClipped, Vclip = clip_matrix_with_exact_eigenvalue1(similarities, sw, sv)
-
-# Spiegeln, da wir minimale Unterschiede in den späteren Nachkommastellen haben,
-# so dass die Matrix nicht mehr symmetrisch ist.
-i_lower = np.tril_indices(simClipped.shape[0], -1)
-simClipped[i_lower] = simClipped.T[i_lower]
-
-disClipped = sim2dis(simClipped)
+# How to convert them back to similarities?
 
 # %%
 # Neue Punkte ebenfalls korrigieren
 # Nachdem ich die Distanzen von einem Punkt zu allen anderen Punkten berechnet habe, muss ich ihn ebenfalls in SIM
 # umwandeln, anschließend korrigieren und wieder in DIS umwandeln.
-# TODO Ich wandle die Distanzen oben mit Double Centering in Similarities um. Wie mache ich das hier mit nur einem Vektor?
-# TODO Wie kann ich das mit EINEM Punkt gemacht habe, wie kann ich das mit N Punkten machen?
+
+
+Diss = np.array([[0, 1, 2], [1, 0, 3], [2, 3, 0]])
+sm, fDis2K = correctMatrix(Diss)
+sm[np.abs(sm) < 1e-8] = 0
+print("sm", sm)
+
+# Convert new distances
+dist = np.array([[4, 5, 6], [9, 8, 7], ])
+c = fDis2K(dist)
+c[np.abs(c) < 1e-8] = 0
+print(c)
+
+
 
 # Wenn der Vektor in Similarities umgewandelt wurde, kann ich ihn korrigieren.
-# st = st * Vclip @ Vclip @ st
-# TODO: Wieder in Similarities umwandeln
-
+# TODO: Wieder in Dissimilarities umwandeln
 # %%
 # Prüfen, wie gut der Klassifikator die Punkte jetzt findet
 # TODO: Über alle Punkte iterieren und den Test machen.
