@@ -7,6 +7,20 @@ Ziele:
 + Prüfen, wie gut er die Punkte findet
 """
 
+
+def sim2dis(sim):
+    (n, m) = sim.shape
+
+    if n != m:
+        raise Exception('The similarity matrix must be square.')
+
+    d1 = np.diag(sim)
+    d2 = d1.T
+    dis = (d1 + d2) - 2 * sim
+    dis = 0.5 * (dis + dis.T)
+    return dis
+
+
 # %%
 # 1: Daten generieren
 
@@ -39,7 +53,8 @@ def distLP(x1, x2):
     x1 = x1[0:2]
     x2 = x2[0:2]
     diff = np.abs((x1 - x2)[0:2])
-    p = 0.5
+    # p = 0.5
+    p = 2  # metric euclidean
     n = 0
     for num in diff:
         n += math.pow(num, p)
@@ -76,11 +91,10 @@ def correctMatrix(D, correction='clip'):
     overall_mean_dissimilarity = np.sum(tmp @ D.T) / pow(N, 2)
     mean_dissimilarity = sum(D, 0) / N
 
-    print("S_mm", S_mm)
     w, v = np.linalg.eigh(S_mm)
     v = np.flip(v, 1)
     w = w[::-1]
-    w[w < 0] = 0  # clip
+    # w[w < 0] = 0  # clip (currently disabled)
     w = np.diag(w)
 
     S_nm_ = v @ (w @ v.T)
@@ -109,22 +123,17 @@ def correctMatrix(D, correction='clip'):
 # Nachdem ich die Distanzen von einem Punkt zu allen anderen Punkten berechnet habe, muss ich ihn ebenfalls in SIM
 # umwandeln, anschließend korrigieren und wieder in DIS umwandeln.
 
+Diss = dissimilarities
+corrected_similarity, fDis2K = correctMatrix(Diss)
+corrected_similarity[np.abs(corrected_similarity) < 1e-8] = 0
 
-Diss = np.array([[0, 1, 2], [1, 0, 3], [2, 3, 0]])
-sm, fDis2K = correctMatrix(Diss)
-sm[np.abs(sm) < 1e-8] = 0
-print("sm", sm)
+corrected_dissimilarity = sim2dis(corrected_similarity)
 
-# Convert new distances
-dist = np.array([[4, 5, 6], [9, 8, 7], ])
-c = fDis2K(dist)
-c[np.abs(c) < 1e-8] = 0
-print(c)
-
-
-
+# %%
 # Wenn der Vektor in Similarities umgewandelt wurde, kann ich ihn korrigieren.
-# TODO: Wieder in Dissimilarities umwandeln
+#  Wieder in Dissimilarities umwandeln
+
+
 # %%
 # Prüfen, wie gut der Klassifikator die Punkte jetzt findet
 # TODO: Über alle Punkte iterieren und den Test machen.
@@ -134,12 +143,45 @@ print(c)
 # Test der Klassifikation OHNE Korrektur
 from sklearn.neighbors import NearestNeighbors
 
-classifier = NearestNeighbors(n_neighbors=5, metric=distLP)
-classifier.fit(X_train)
 
-predictedNeighbours = classifier.kneighbors(X_test, 1, False)
-predictedClasses = Y_train[predictedNeighbours.T]
+def dlookup(p1, p2):
+    if p1[2] >= 0 and p2[2] >= 0:
+        return corrected_dissimilarity[int(p1[2]), int(p2[2])]
+    elif p2[2] >= 0:
+        otherPtId = int(p2[2])
+        dist = np.array([[distLP(p1, n) for n in X_train]])
+        local_similarity = fDis2K(dist)
 
-differences = np.abs(Y_test - predictedClasses).sum()
-print("Wrong classified: ", differences)  # 33
-print("Correct classified: ", test_samples - differences)  # 217
+        own_similarity = 1.5
+        # TODO The following line is a test, only to test if it can predict the train values again
+        # own_similarity = corrected_similarity[otherPtId, otherPtId]
+
+        # revert to dist
+        dists = np.array(
+            [corrected_similarity[otherPtId, otherPtId] + own_similarity - 2 * local_similarity[0, n] for n in
+             range(0, local_similarity.shape[1])])
+        return dists[otherPtId]
+    else:
+        raise Exception()
+
+
+from vptree2 import VPTree
+dtrain = [[n[0], n[1], m] for m, n in enumerate(X_train)]
+vp = VPTree(dtrain, dlookup)
+
+# %%
+dtest = np.array([[n[0], n[1], -1] for m, n in enumerate(X_train[0:500])])
+stest = Y_train[0:500]
+correct = 0
+
+for n, v in enumerate(dtest):
+    originalclazz = stest[n]
+    predictedNeighbour = vp.get_nearest_neighbor(v)[1][2]
+    predictedClazz = Y_train[int(predictedNeighbour)]
+    if predictedClazz == originalclazz:
+        correct += 1
+    else:
+        print(n)
+
+print("Wrong classified: ", stest.shape[0] - correct)  # 33
+print("Correct classified: ", correct)  # 217
