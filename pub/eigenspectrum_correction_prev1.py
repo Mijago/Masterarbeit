@@ -102,18 +102,32 @@ def correctMatrix(D, correction='clip'):
     S_mm_ = 0.5 * (S_mm_ + S_mm_.T)
 
     P = np.linalg.pinv(S_mm_, 1e-4) @ S_nm_
+    S_nm_pinv = np.linalg.pinv(S_nm_)
 
     def fDis2K(DX_km):
         _N, _m = DX_km.shape
-        Snm = -.5 * (
+        Cnm = -.5 * (
                 DX_km
                 - np.ones((_N, 1)) * mean_dissimilarity
                 - (center_estimates @ DX_km.T).T * np.ones((1, _m))
                 + overall_mean_dissimilarity
         )
-        return Snm @ P
+        return Cnm @ P, Cnm
 
-    return S_nm_, fDis2K
+    def fDis2D(DX_km):
+        Snm, Cnm = fDis2K(DX_km)
+        N, m = Snm.shape
+        corrected_self_similarities = np.sum((S_nm_pinv @ Snm.T) * Snm.T, 0)
+
+        distances = np.array(
+            [[
+                corrected_similarity[col, col] + corrected_self_similarities[row] - 2 * Snm[row, col]
+                for col in range(0, m)
+            ] for row in range(0, N)]
+        )
+        return distances
+
+    return S_nm_, fDis2K, fDis2D
 
 
 # How to convert them back to similarities?
@@ -124,20 +138,60 @@ def correctMatrix(D, correction='clip'):
 # umwandeln, anschließend korrigieren und wieder in DIS umwandeln.
 
 Diss = dissimilarities
-corrected_similarity, fDis2K = correctMatrix(Diss)
+corrected_similarity, fDis2K, fDis2D = correctMatrix(Diss)
 corrected_similarity[np.abs(corrected_similarity) < 1e-8] = 0
 
 corrected_dissimilarity = sim2dis(corrected_similarity)
 
 # %%
+points = X_test
+dist = np.array([[distLP(point, n) for n in X_train] for point in points])
+dist_corr = fDis2D(dist)
+
+print("dist_corr", dist_corr)
+
+# %%
 # Wenn der Vektor in Similarities umgewandelt wurde, kann ich ihn korrigieren.
 #  Wieder in Dissimilarities umwandeln
+points = X_test
 
+dist = np.array([[distLP(point, n) for n in X_train] for point in points])
+csim, _ = fDis2K(dist)
+
+pinv = np.linalg.pinv(corrected_similarity)
+sX = np.sum((pinv @ csim.T) * csim.T, 0)
+# sX enthält den korrigierten Selbstähnlichkeitswert
+print("sx", sX)
+# revert to dist
+dists = np.array(
+    [[
+        corrected_similarity[n, n] + sX[row] - 2 * csim[row, n]
+        for n in range(0, csim.shape[1])
+    ] for row in range(0, csim.shape[0])]
+)
+print("dists", dists)
 
 # %%
 # Prüfen, wie gut der Klassifikator die Punkte jetzt findet
 # TODO: Über alle Punkte iterieren und den Test machen.
 
+A = np.array([[0, 1, 2], [1, 0, 3], [2, 3, 0]])
+acorrected_similarity, afDis2K, afDis2D = correctMatrix(A)
+
+B = np.array([[10, 20, 30], [40, 50, 60]])
+
+Snm, Cnm = afDis2K(B)
+N, m = Cnm.shape
+SdiagX = np.array([np.sum(A @ Cnm.T * Cnm.T, 0)]).T
+print("SdiagX", SdiagX)
+SdiagY = np.diag(A)
+# bis hier gleiche Werte wie Matlab
+
+Dmn = np.array([
+    [-2 * Snm[y, x] + SdiagX[y] + SdiagY[x]
+     for y in range(0, N)] for x in range(0, m)
+]).T
+Dmn
 
 # %%
 # Test der Klassifikation OHNE Korrektur
@@ -150,7 +204,7 @@ def dlookup(p1, p2):
     elif p2[2] >= 0:
         otherPtId = int(p2[2])
         dist = np.array([[distLP(p1, n) for n in X_train]])
-        local_similarity = fDis2K(dist)
+        local_similarity, uncorrected = fDis2K(dist)
 
         own_similarity = 1.5
         # TODO The following line is a test, only to test if it can predict the train values again
@@ -166,6 +220,7 @@ def dlookup(p1, p2):
 
 
 from vptree2 import VPTree
+
 dtrain = [[n[0], n[1], m] for m, n in enumerate(X_train)]
 vp = VPTree(dtrain, dlookup)
 
